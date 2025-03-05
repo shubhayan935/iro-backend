@@ -2,7 +2,7 @@
 import os
 from fastapi import FastAPI
 from motor.motor_asyncio import AsyncIOMotorClient
-from routers import users, agents, auth
+from routers import users, agents, auth, recordings
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 import certifi
@@ -40,6 +40,8 @@ app.include_router(agents.router, prefix="/agents", tags=["Agents"])
 print("Agents router included at '/agents/'")
 app.include_router(auth.router, prefix="/auth", tags=["Auth"])
 print("Auth router included at '/auth/'")
+app.include_router(recordings.router, prefix="/recordings", tags=["Recordings"])
+print("Recordings router included at '/recordings/'")
 
 if __name__ == "__main__":
     import uvicorn
