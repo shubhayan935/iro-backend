@@ -10,68 +10,96 @@ import json
 from typing import Optional, List
 import logging
 import subprocess
+import shutil
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# AI helper functions
-async def extract_audio_from_video(video_path: str) -> str:
-    """Extract audio from video file to a temporary WAV file."""
-    audio_path = video_path.replace('.webm', '.wav')
+# NEW HELPER FUNCTION: extract key frames from video using ffmpeg
+def extract_key_frames(video_path: str, output_dir: str, fps: float = 1/10) -> List[str]:
+    """
+    Extract key frames from the video at the specified frames per second (fps)
+    and save them in output_dir. Returns a list of file paths for the extracted frames.
+    """
+    # Ensure the output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    # Example command: extract one frame every 10 seconds
+    output_pattern = os.path.join(output_dir, "frame_%03d.jpg")
     try:
         subprocess.run([
-            'ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le', 
-            '-ar', '16000', '-ac', '1', audio_path
-        ], check=True)
-        return audio_path
+            "ffmpeg", "-i", video_path,
+            "-vf", f"fps={fps}",
+            output_pattern
+        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
-        logger.error(f"Error extracting audio: {e}")
-        raise Exception(f"Failed to extract audio: {e}")
+        logger.error(f"Error extracting key frames: {e}")
+        raise Exception(f"Failed to extract key frames: {e}")
+    
+    # List all extracted frames (sorted by filename)
+    frames = sorted([os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.endswith(".jpg")])
+    return frames
 
-async def transcribe_audio(audio_path: str) -> str:
-    """Transcribe audio to text using OpenAI's Whisper API."""
-    try:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            logger.error("OpenAI API key not found")
-            return ""
-        
-        with open(audio_path, "rb") as audio_file:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    "https://api.openai.com/v1/audio/transcriptions",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    files={"file": ("audio.wav", audio_file, "audio/wav")},
-                    data={"model": "whisper-1"}
-                )
-                
-                if response.status_code != 200:
-                    logger.error(f"OpenAI API error: {response.text}")
-                    return ""
-                
-                return response.json().get("text", "")
-    except Exception as e:
-        logger.error(f"Error transcribing audio: {e}")
-        return ""
+# NEW HELPER FUNCTION: dummy captioning function for an image
+def caption_image(image_path: str) -> str:
+    """
+    Dummy image captioning function.
+    In a real system, you would integrate with an image captioning model/API here.
+    """
+    # For now, return a placeholder caption that includes the filename.
+    return f"Caption for {os.path.basename(image_path)}"
 
-async def analyze_transcript(transcript: str) -> List[dict]:
-    """Analyze transcript to extract steps with titles and descriptions."""
+# NEW FUNCTION: extract onboarding steps directly from video (and audio) context
+async def extract_steps_from_recording(video_path: str) -> List[dict]:
+    """
+    Extract onboarding steps from the video recording by:
+      1. Extracting key frames.
+      2. Generating captions for those frames.
+      3. Compiling the captions into a prompt for an LLM to extract steps.
+      
+    Each step should include:
+        - title: A clear title summarizing the step.
+        - description: A detailed explanation of what to do.
+        - ui_elements: A list of UI elements (e.g., buttons, fields, menus) to look for.
+        - inputs: Any specific inputs or selections required.
+        - success_criteria: Criteria for successful completion.
+    """
+    # Create a temporary directory to store key frames
+    temp_dir = tempfile.mkdtemp()
     try:
+        # Extract key frames (for example, one frame every 10 seconds)
+        frames = extract_key_frames(video_path, temp_dir, fps=1)
+        if not frames:
+            raise Exception("No key frames extracted from the video.")
+
+        # Generate captions for each frame (in a real system, use an image captioning API)
+        captions = []
+        for frame in frames:
+            caption = caption_image(frame)
+            captions.append(caption)
+
+        # Build a prompt that provides the key frame captions to the LLM
+        prompt = (
+            "You are an assistant that extracts structured onboarding steps from a screen recording. "
+            "Below are captions generated from key frames of a video recording where an admin user walked through an onboarding process. "
+            "Based on these captions, extract the onboarding steps. For each step, provide:\n"
+            "1. A clear title summarizing the step.\n"
+            "2. A detailed description explaining exactly what to do.\n"
+            "3. A list of UI elements to look for (e.g., buttons, fields, menus).\n"
+            "4. Any specific inputs or selections that need to be made.\n"
+            "5. Success criteria for completing the step.\n\n"
+            "Key frame captions:\n"
+        )
+        for idx, cap in enumerate(captions, 1):
+            prompt += f"{idx}. {cap}\n"
+        prompt += "\nFormat your answer as a JSON array of objects with the following keys: "
+        prompt += '"title", "description", "ui_elements", "inputs", "success_criteria".'
+
+        # Call OpenAI API to extract steps using the prompt
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             logger.error("OpenAI API key not found")
             return []
-        
-        prompt = f"""
-        Extract clearly defined onboarding steps from this transcript of a screen recording.
-        For each step, identify a concise title and a description explaining what to do.
-        
-        Transcript:
-        {transcript}
-        
-        Format the output as a JSON array, with each step having a 'title' and 'description' field.
-        """
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -80,74 +108,69 @@ async def analyze_transcript(transcript: str) -> List[dict]:
                     "Content-Type": "application/json"
                 },
                 json={
-                    "model": "gpt-4",
+                    "model": "gpt-4o-mini",
                     "messages": [
-                        {"role": "system", "content": "You are an assistant that extracts structured steps from transcripts."},
+                        {"role": "system", "content": "You are an assistant that extracts structured steps from video recordings."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.3
                 }
             )
-            
             if response.status_code != 200:
                 logger.error(f"OpenAI API error: {response.text}")
                 return []
-            
             result = response.json()
             content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-            
-            # Extract JSON from the content
+            # Try to extract JSON from the response
             try:
-                # Find JSON array in the response
                 content = content.strip()
                 if content.startswith("```json"):
                     content = content.split("```json")[1].split("```")[0].strip()
                 elif content.startswith("```"):
                     content = content.split("```")[1].split("```")[0].strip()
-                
                 steps = json.loads(content)
                 return steps
             except json.JSONDecodeError:
-                logger.error(f"Failed to parse JSON from response: {content}")
+                logger.error(f"Failed to parse JSON from LLM response: {content}")
                 return []
     except Exception as e:
-        logger.error(f"Error analyzing transcript: {e}")
+        logger.error(f"Error extracting steps from recording: {e}")
         return []
+    finally:
+        # Clean up temporary key frames directory
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception as e:
+            logger.error(f"Error cleaning up key frames directory: {e}")
 
+# Modified process_recording function (now using the new extraction function)
 async def process_recording(file_path: str, file_id: str, db):
-    """Process recording to extract steps and update the database."""
+    """Process recording to extract onboarding steps and update the database."""
     try:
-        # Extract audio
-        audio_path = await extract_audio_from_video(file_path)
+        # Instead of transcribing, directly extract steps from the video
+        steps = await extract_steps_from_recording(file_path)
         
-        # Transcribe audio
-        transcript = await transcribe_audio(audio_path)
-        
-        # Analyze transcript to get steps
-        steps = await analyze_transcript(transcript)
-        
-        # Update metadata in GridFS
+        # Update metadata in GridFS with the extracted steps
         await db.fs.files.update_one(
             {"_id": ObjectId(file_id)},
             {"$set": {
-                "metadata.transcript": transcript,
-                "metadata.extracted_steps": steps
+                "metadata.extracted_steps": steps,
+                "metadata.processing_status": "complete"
             }}
         )
         
-        # Clean up temporary files
+        # Clean up the temporary video file
         try:
             os.remove(file_path)
-            os.remove(audio_path)
         except Exception as e:
-            logger.error(f"Error cleaning up files: {e}")
+            logger.error(f"Error cleaning up video file: {e}")
             
     except Exception as e:
         logger.error(f"Error processing recording: {e}")
         # Update metadata to indicate processing failed
         await db.fs.files.update_one(
             {"_id": ObjectId(file_id)},
-            {"$set": {"metadata.processing_error": str(e)}}
+            {"$set": {"metadata.processing_error": str(e), "metadata.processing_status": "failed"}}
         )
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
@@ -253,7 +276,6 @@ async def get_recording_metadata(request: Request, file_id: str):
             "processing_status": metadata.get("processing_status", "unknown"),
             "step_index": metadata.get("step_index"),
             "extracted_steps": metadata.get("extracted_steps", []),
-            "transcript": metadata.get("transcript", ""),
             "error": metadata.get("processing_error")
         }
     except Exception as e:
