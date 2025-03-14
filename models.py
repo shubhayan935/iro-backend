@@ -53,9 +53,20 @@ class AgentBase(BaseModel):
     role: str  # e.g. "Software Engineer"
     description: Optional[str] = None
 
+class OnboardingStep(BaseModel):
+    """Model for an onboarding step"""
+    title: str
+    description: str
+    recordingUrl: Optional[str] = None
+    _id: Optional[str] = None
+
+class StepsUpdate(BaseModel):
+    """Model for updating agent steps"""
+    steps: List[OnboardingStep]
+
 class AgentCreate(AgentBase):
     emails: List[EmailStr] = []  # Authorized employee emails
-    steps: List[dict] = []        # Onboarding steps
+    steps: List[OnboardingStep]  # Onboarding steps
 
 class AgentUpdate(BaseModel):
     name: Optional[str]
@@ -72,3 +83,5 @@ class Agent(AgentBase):
     class Config:
         allow_population_by_field_name = True
         json_encoders = {ObjectId: str}
+
+
