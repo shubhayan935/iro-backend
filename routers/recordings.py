@@ -151,7 +151,7 @@ async def upload_recording(
     except Exception as e:
         logger.error(f"Error uploading recording: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
- 
+
 @router.get("/{file_id}")
 async def get_recording(request: Request, file_id: str):
     """Retrieve a recording file from GridFS by its ID."""
